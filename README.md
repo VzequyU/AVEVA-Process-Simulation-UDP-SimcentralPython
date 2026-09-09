@@ -121,7 +121,7 @@ The **custom process DLL runs inside APS**. Python does not load the DLL directl
 | AVEVA Process Simulation | 2023+ | Process simulator with EETK |
 | Python | 3.8+ | With `simcentralconnect` working |
 | Custom EETK DLL | Compatible | Deployed in your APS model ([build it here](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP)) |
-| NumPy + Opyrability | Optional | Only for `opyrability_oi.py` |
+| NumPy + [Opyrability](https://github.com/CODES-group/opyrability) | Optional | Only for `opyrability_oi.py` ([JOSS paper](https://doi.org/10.21105/joss.05966)) |
 
 > ⚠️ Use the Windows Python environment where `import simcentralconnect` and `simcentralconnect.connect().Result` already work. Obtain the connector through your installed product's supported setup.
 
@@ -202,7 +202,13 @@ This produces a 3×3 = 9 trial full-factorial sweep. Successful trial rows are s
 
 ## 📊 Operability Analysis
 
-Evaluate a fixed-horizon operability index using the [Opyrability](https://github.com/opyrability/opyrability) package:
+The operability evaluation in this project uses [**Opyrability**](https://github.com/CODES-group/opyrability), a Python package for Process Operability analysis developed by **Victor Alves, San Dinh, John Kitchin, Vitor Gazzaneo, Juan C. Carrasco, and Fernando V. Lima** at the [CODES Group](https://fernandolima.faculty.wvu.edu/) (Carnegie Mellon University / West Virginia University).
+
+> 📄 If you use the operability features of this project, please cite the Opyrability paper:
+>
+> Alves, V., Dinh, S., Kitchin, J. R., Gazzaneo, V., Carrasco, J. C., & Lima, F. V. (2024). **Opyrability: A Python package for process operability analysis.** *Journal of Open Source Software*, 9(94), 5966. [DOI: 10.21105/joss.05966](https://doi.org/10.21105/joss.05966)
+
+### Running the OI Evaluation
 
 ```powershell
 python -u opyrability_oi.py --config config/four_tanks.json --study config/operability_four_tanks.json
@@ -345,6 +351,14 @@ No Python code changes are needed. See [docs/adapt_another_simulation.md](docs/a
 
 ---
 
+## 🙏 Acknowledgments
+
+- **[Opyrability](https://github.com/CODES-group/opyrability)** — The operability analysis in this project is powered by the Opyrability package, developed by [Victor Alves](https://victor-alves.com), San Dinh, [John Kitchin](https://github.com/jkitchin), Vitor Gazzaneo, Juan C. Carrasco, and [Fernando V. Lima](https://github.com/fvlima-codes) at the [CODES Group](https://fernandolima.faculty.wvu.edu/) (Carnegie Mellon University / West Virginia University). Published in the [Journal of Open Source Software](https://doi.org/10.21105/joss.05966) (2024).
+
+- **AVEVA** — AVEVA Process Simulation and the External Equation Toolkit (EETK) are products of AVEVA Group plc. The `simcentralconnect` API is part of the official AVEVA scripting infrastructure.
+
+---
+
 ## 📝 License
 
 No code license has been selected yet. AVEVA and third-party components remain subject to their own terms and are not redistributed here.
@@ -358,6 +372,7 @@ No code license has been selected yet. AVEVA and third-party components remain s
 | Repository | Description |
 |------------|-------------|
 | [AVEVA-Process-Simulation-UDP](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP) | C# DLL development, EETK setup, valve and four-tank examples, PDF guide |
+| [Opyrability (CODES-group)](https://github.com/CODES-group/opyrability) | Process operability package by Alves et al. — used for OI evaluation in this project |
 | This repository | Python automation engine, sweeps, operability analysis |
 
 ---
