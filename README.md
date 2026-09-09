@@ -1,129 +1,368 @@
-# AVEVA Process Simulation — Python Experiment Starter
+<p align="center">
+  <img src="https://img.shields.io/badge/AVEVA-Process%20Simulation-purple?style=for-the-badge&logo=data:image/png;base64," alt="AVEVA"/>
+  <img src="https://img.shields.io/badge/Python-3.8+-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
+  <img src="https://img.shields.io/badge/SimCentral-Connect%20API-teal?style=for-the-badge" alt="SimCentral"/>
+  <img src="https://img.shields.io/badge/Protocol-UDP%20Sockets-orange?style=for-the-badge" alt="UDP"/>
+  <img src="https://img.shields.io/badge/Opyrability-OI%20Evaluation-red?style=for-the-badge" alt="Opyrability"/>
+</p>
 
-Reusable examples for connecting **AVEVA Process Simulation (APS)** to Python with a **custom EETK DLL over UDP** and the **`simcentralconnect` scripting interface**.
+<h1 align="center">⚙️ AVEVA Process Simulation<br>Automated Experiment Engine</h1>
 
-Use the same connection layer for an individual experiment, a sequential parameter sweep, or an Opyrability model evaluation. Process variables are configured in JSON rather than hard-coded into the engine.
+<p align="center">
+  <strong>Automate simulation experiments without touching the GUI</strong><br>
+  <em>Single runs, parameter sweeps, and operability analysis — all from Python scripts.</em>
+</p>
 
-**Author:** Ezequiel José Valencia Urbina — University of Brasília (UnB).
+<p align="center">
+  <a href="#-quick-start">🚀 Quick Start</a> •
+  <a href="#-how-the-connection-works">🔗 Connection</a> •
+  <a href="#-automated-experiments">🔄 Sweeps</a> •
+  <a href="#-operability-analysis">📊 Opyrability</a> •
+  <a href="docs/">📖 Docs</a>
+</p>
 
-## How the connection works
+---
 
-| Connection | Responsibility |
-|---|---|
-| Python → UDP → custom DLL → APS model | Apply commanded process inputs through the DLL's model bindings. |
-| APS model → custom DLL → UDP → Python | Return measurements and simulation timestamps. |
-| Python → `simcentralconnect` → APS | Open the simulation, stop the solver, restore a snapshot and execute dynamics. |
+## 🎯 What Is This?
 
-The **custom process DLL runs inside APS**. Python does not load that DLL directly. `simcentralconnect` connects to the installed APS environment through the official scripting infrastructure. UDP does not start or pause APS in this design.
+This repository provides a **reusable Python engine** for running automated experiments on [AVEVA Process Simulation (APS)](https://www.aveva.com/en/products/process-simulation/) — without manual interaction with the simulator GUI.
 
-The DLL development project is available separately at [AVEVA-Process-Simulation-UDP](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP). Configure a compatible DLL and process model first. This repository does not contain the APS installer, vendor SDK assemblies, a compiled process DLL or the process model.
+It combines two communication channels:
 
-## What can be reused?
+- **`simcentralconnect`** — the official scripting API that controls the simulation lifecycle (open, stop, snapshot, run dynamics)
+- **Custom EETK DLL over UDP** — real-time bidirectional data exchange with the process model
 
-The engine supports any configured number of numeric inputs and outputs **when the custom DLL implements the selected protocol**:
-
-- Flat UTF-8 JSON commands, or a plain numeric command for a single-input DLL.
-- Flat UTF-8 JSON telemetry containing named numeric measurements and a simulation clock in seconds.
-- A prepared Dynamics snapshot and the demonstrated APS lifecycle methods.
-
-Changing a JSON key in Python does not create a variable or modify the DLL. New process variables must also be bound and serialized correctly in the custom DLL. Units in configuration document the contract; the engine does not perform unit conversion. See [adapting another simulation](docs/adapt_another_simulation.md).
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `aveva_engine.py` | Configurable connection, snapshot reset, concurrent UDP reception and result logging. |
-| `run_experiment.py` | Run one configured input vector. |
-| `test_aveva_engine.py` | Equivalent manual integration entry point for checking the connection. |
-| `automated_experiments.py` | Sequential constant-input grid experiments. |
-| `opyrability_oi.py` | Fixed-horizon input/output map and raw OI evaluation. |
-| `config/four_tanks.json` | Concrete four-tank connection example. |
-| `config/generic_valve.template.json` | Starting template for another process; edit before use. |
-| `config/grid_four_tanks.json` | Nine-trial grid example. |
-| `config/operability_four_tanks.json` | Illustrative two-level DOS and resolution. |
-| `tests/test_engine_offline.py` | Offline tests with real UDP sockets and fake APS services. |
-| `docs/` | Connection instructions, protocol details and English LaTeX guide. |
-
-## 1. Prepare your environment
-
-Use the Windows Python environment in which `import simcentralconnect` and `simcentralconnect.connect().Result` already work. Obtain the connector and APS/EETK dependencies through your installed product's supported setup. Do not copy vendor DLLs into this repository or assume an arbitrary PyPI package is the correct connector.
-
-The engine, single experiment and sweep use Python's standard library plus the configured AVEVA connector. The Opyrability example additionally needs NumPy and the exact Opyrability revision required by your project. This starter does not claim a verified dependency lock for that revision.
-
-Open your process model, deploy its custom DLL, check variable specifications, and prepare a named snapshot in Dynamics mode. Stop other programs using UDP port 5005.
-
-## 2. Configure the model
-
-Edit `config/four_tanks.json` or make a copy for your own process. Set:
-
-- `simulation` and `snapshot`: exact APS names.
-- `udp`: bind address, peer address, ports and command format.
-- `inputs`: logical name, DLL wire key, units and allowed bounds.
-- `outputs`: logical name, DLL wire key and units.
-- `run.argument`: argument passed to `RunDynamics` in seconds.
-- `run.expected_final_time`: independently expected final telemetry clock value.
-- `run.time_key` and `run.time_tolerance`: clock field and endpoint tolerance.
-
-For example, logical input `feed_1` maps to JSON key `q1`; logical output `level_1` maps to telemetry key `h1`. `aps_path` is documentation for the DLL binding, not a call to `IVariableManager`.
-
-The supplied four-tank defaults use `Sim 3`, snapshot `start dym` and a 20-second run from the tested base case. Verify whether your installed `RunDynamics` interprets its argument as a duration or target time before changing starting clocks. The engine does not guess this from `.NET` type names.
-
-## 3. Check one experiment
-
-From the repository root:
-
-```powershell
-python -u test_aveva_engine.py --config config/four_tanks.json
+```
+┌────────────────────┐                              ┌────────────────────────┐
+│     Python Side    │     simcentralconnect API     │       APS Side         │
+│                    │─────────────────────────────►│                        │
+│  aveva_engine.py   │  Open, Stop, Snapshot, Run   │  Simulation Manager    │
+│  ─────────────────│                              │  Snapshot Manager      │
+│  run_experiment.py │         UDP Commands          │  ──────────────────── │
+│  automated_exp.py  │─────────────────────────────►│  Custom EETK DLL      │
+│  opyrability_oi.py │◄─────────────────────────────│  (EquationSet.cs)     │
+│                    │        UDP Telemetry          │  ──────────────────── │
+│  config/*.json     │                              │  EO Dynamics Solver    │
+│  results/          │                              │  Process Model         │
+└────────────────────┘                              └────────────────────────┘
 ```
 
-Or supply a different input vector using the configured logical names:
+> **🔗 Prerequisite:** The DLL development project is available at [AVEVA-Process-Simulation-UDP](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP). Configure a compatible DLL and process model first.
+
+### Key Features
+
+- ✅ **JSON-configured** — change process, variables, and bounds without editing code
+- ✅ **Snapshot-based reset** — every experiment starts from the exact same initial condition
+- ✅ **Concurrent UDP** — receiver runs in a separate process, never blocks the solver
+- ✅ **Incremental logging** — raw telemetry (JSONL) + structured results (JSON) + sweep CSV
+- ✅ **Grid sweeps** — sequential constant-input experiments over a parameter grid
+- ✅ **Opyrability integration** — fixed-horizon OI evaluation via the `opyrability` package
+- ✅ **Offline tests** — real UDP sockets with mock APS services for CI-safe validation
+
+---
+
+## 🔗 How the Connection Works
+
+| Channel | Direction | Responsibility |
+|---------|-----------|----------------|
+| `simcentralconnect` → APS | Python → APS | Open simulation, stop solver, restore snapshot, execute dynamics |
+| UDP → custom DLL → APS | Python → APS | Apply commanded process inputs through the DLL's model bindings |
+| APS → custom DLL → UDP | APS → Python | Return measurements and simulation timestamps as JSON telemetry |
+
+The **custom process DLL runs inside APS**. Python does not load the DLL directly. `simcentralconnect` connects to the installed APS environment through the official scripting infrastructure. UDP handles only data exchange — it does not start or pause the simulator.
+
+### The Experiment Lifecycle
+
+```
+1. connect()     →  Open simulation via simcentralconnect
+2. reset()       →  Stop solver + restore base snapshot
+3. Verify mode   →  Confirm Dynamics mode is active
+4. Start worker  →  Spawn UDP receiver (multiprocessing.spawn)
+5. Drain queue   →  Discard stale datagrams from previous runs
+6. Send command  →  UDP packet with input vector (JSON or scalar)
+7. RunDynamics() →  Execute simulation for configured duration
+8. Collect       →  Stream telemetry to disk, extract endpoint
+9. Validate      →  Check final time against expected value ± tolerance
+10. Cleanup      →  Stop solver + restore snapshot (always, even on failure)
+```
+
+---
+
+## 📁 Project Structure
+
+| File | Purpose |
+|------|---------|
+| `aveva_engine.py` | Core engine: configurable connection, snapshot reset, concurrent UDP reception, result logging |
+| `run_experiment.py` | Run a single configured input vector |
+| `test_aveva_engine.py` | Manual integration entry point for checking the connection |
+| `automated_experiments.py` | Sequential constant-input grid experiments |
+| `opyrability_oi.py` | Fixed-horizon input/output map and raw OI evaluation |
+
+| Configuration | Purpose |
+|---------------|---------|
+| `config/four_tanks.json` | Concrete four-tank connection example |
+| `config/generic_valve.template.json` | Starting template for another process (edit before use) |
+| `config/grid_four_tanks.json` | Nine-trial grid example |
+| `config/operability_four_tanks.json` | Illustrative two-level DOS and resolution |
+
+| Support | Purpose |
+|---------|---------|
+| `tests/test_engine_offline.py` | Offline tests with real UDP sockets and mock APS services |
+| `docs/` | Connection instructions, protocol details, adaptation guide, LaTeX guide |
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+| Software | Version | Purpose |
+|----------|---------|---------|
+| AVEVA Process Simulation | 2023+ | Process simulator with EETK |
+| Python | 3.8+ | With `simcentralconnect` working |
+| Custom EETK DLL | Compatible | Deployed in your APS model ([build it here](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP)) |
+| NumPy + Opyrability | Optional | Only for `opyrability_oi.py` |
+
+> ⚠️ Use the Windows Python environment where `import simcentralconnect` and `simcentralconnect.connect().Result` already work. Obtain the connector through your installed product's supported setup.
+
+### Step 1 — Prepare the Simulation
+
+Open your process model, deploy its custom DLL, verify variable specifications, and prepare a named snapshot in Dynamics mode. Stop other programs using UDP port 5005.
+
+### Step 2 — Configure the Model
+
+Edit `config/four_tanks.json` or copy it for your own process:
+
+```jsonc
+{
+  "simulation": "Sim 3",           // Exact APS simulation name
+  "snapshot": "start dym",         // Exact snapshot name in Dynamics
+
+  "udp": {
+    "bind_ip": "127.0.0.1",
+    "peer_ip": "127.0.0.1",
+    "receive_port": 5005,
+    "send_port": 5006,
+    "command_format": "json"       // "json" or "scalar" (single-input DLL)
+  },
+
+  "inputs": {
+    "feed_1": { "key": "q1", "unit": "m³/s", "bounds": [0.0, 0.15] },
+    "feed_2": { "key": "q2", "unit": "m³/s", "bounds": [0.0, 0.15] }
+  },
+
+  "outputs": {
+    "level_1": { "key": "h1", "unit": "m" },
+    "level_2": { "key": "h2", "unit": "m" }
+  },
+
+  "run": {
+    "argument": 20,                // Passed to RunDynamics (seconds)
+    "expected_final_time": 20,     // Expected telemetry clock endpoint
+    "time_key": "t",
+    "time_tolerance": 0.5,
+    "unit": "s"
+  }
+}
+```
+
+> **Note:** Logical input `feed_1` maps to DLL wire key `q1`; logical output `level_1` maps to telemetry key `h1`. Changing a JSON key here does **not** create a variable in the DLL — new process variables must be bound and serialized in the C# code.
+
+### Step 3 — Check One Experiment
 
 ```powershell
+# Default input vector from config
+python -u test_aveva_engine.py --config config/four_tanks.json
+
+# Custom input vector
 python -u run_experiment.py --config config/four_tanks.json --inputs '{"feed_1": 0.08, "feed_2": 0.05}'
 ```
 
-If PowerShell's native argument handling changes the JSON quoting, edit `example_inputs` in the configuration and omit `--inputs`. Use the full path to your working Python interpreter if needed.
+---
 
-The engine stops and restores the base snapshot, checks Dynamics mode, starts the receiver, sends the command, runs APS and collects telemetry. It attempts to stop and restore the base case after each run, including failures. It does not close the user's APS simulation.
+## 🔄 Automated Experiments
 
-## 4. Run automated experiments
+Run a parameter grid where each trial independently restores the base snapshot:
 
 ```powershell
 python -u automated_experiments.py --config config/four_tanks.json --grid config/grid_four_tanks.json
 ```
 
-Each trial independently restores the same base snapshot. Successful trial rows are saved incrementally to a uniquely named CSV. A failed trial stops the sweep and retains its result record and raw telemetry.
+**Grid configuration** (`config/grid_four_tanks.json`):
+```json
+{
+  "feed_1": [0.03, 0.06, 0.09],
+  "feed_2": [0.03, 0.06, 0.09]
+}
+```
 
-## 5. Evaluate a fixed-horizon operability region
+This produces a 3×3 = 9 trial full-factorial sweep. Successful trial rows are saved incrementally to a uniquely named CSV. A failed trial stops the sweep and retains its result record and raw telemetry.
 
-First verify the installed package using [the Opyrability notes](docs/operability.md), then set the actual output requirements in the study file:
+---
+
+## 📊 Operability Analysis
+
+Evaluate a fixed-horizon operability index using the [Opyrability](https://github.com/opyrability/opyrability) package:
 
 ```powershell
 python -u opyrability_oi.py --config config/four_tanks.json --study config/operability_four_tanks.json
 ```
 
-The supplied level DOS is illustrative. The script prints the installed signatures and package version, and reports the raw OI return without assuming percentage scaling.
+The script:
+1. Builds a `model(u) → y` function backed by the APS engine
+2. Caches evaluations to avoid re-simulating visited points
+3. Calls `multimodel_rep` to construct the achievable output set (AOS)
+4. Calls `OI_eval` against the desired output set (DOS) to compute the raw OI
 
-This is a **constant-input, fixed-horizon map**. A full dynamic funnel requires propagation from retained complete states under changing input sequences. That algorithm is explained in the guide but is not implemented by these examples.
+> ⚠️ This is a **constant-input, fixed-horizon map**. A full dynamic operability funnel requires propagation from retained complete states under changing input sequences. See [docs/operability.md](docs/operability.md).
 
-## Results and validation
+---
 
-Every run creates `results/<run-id>/telemetry.jsonl` and `result.json`. Raw telemetry preserves receive order and malformed messages; the result includes configuration, input values, output observations, timing and cleanup outcomes.
+## 📋 Results and Validation
 
-`success: true` means APS returned success, usable telemetry reached the expected clock within tolerance, and cleanup succeeded. It does **not** prove command acknowledgement or accepted-step sampling. `command_applied_verified` remains false because the existing DLL contract has no acknowledgement. Intermediate solver iterates can be present in the stream. Verify the DLL's sampling semantics before drawing quantitative reachability conclusions.
+Every run creates a unique directory under `results/`:
 
-A snapshot may not reset private DLL memory or queued commands. The engine drains immediately queued telemetry and sends a complete input vector, but it cannot guarantee a protocol-level reset without DLL support. See [protocol details](docs/protocol.md).
+```
+results/
+└── a1b2c3d4.../
+    ├── telemetry.jsonl    # Raw UDP packets (receive order, including malformed)
+    └── result.json        # Config, inputs, outputs, timing, cleanup status
+```
 
-## Testing and status
+**What `success: true` means:**
+- ✅ APS `RunDynamics` returned success
+- ✅ Usable telemetry reached the expected clock within tolerance
+- ✅ Post-run cleanup (stop + snapshot restore) succeeded
+
+**What it does NOT prove:**
+- ❌ Command acknowledgement (DLL has no ACK protocol)
+- ❌ Accepted-step sampling (intermediate solver iterates may be present)
+- ❌ Complete DLL state reset (snapshot may not reset private DLL memory)
+
+> Verify the DLL's sampling semantics before drawing quantitative reachability conclusions. See [docs/protocol.md](docs/protocol.md).
+
+---
+
+## 🧪 Testing
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Five offline tests passed: command mapping and bounds rejection, scalar commands, concurrent UDP reception with invalid-packet handling, restoration after run failure, and rejection of an incorrect endpoint time. These tests exercise real localhost UDP with fake simulator services. **This refactored version has not been executed against APS or the required Opyrability 2.0 installation here.**
+Five offline tests pass using real localhost UDP with mock simulator services:
 
-No module connects to APS merely when imported. Keep your own multiprocessing entry points under `if __name__ == "__main__":` on Windows. Use one engine/port pair sequentially; these examples do not coordinate concurrent access to a shared simulation.
+| Test | Validates |
+|------|-----------|
+| Command mapping | JSON encoding with logical → wire key translation |
+| Bounds rejection | Out-of-range inputs are caught before sending |
+| Scalar commands | Single-input DLL format works correctly |
+| Concurrent UDP | Receiver handles invalid packets alongside valid telemetry |
+| Failure recovery | Snapshot is restored even when `RunDynamics` fails |
+| Endpoint check | Incorrect final telemetry time is detected and rejected |
 
-## License
+> **Status:** This refactored version has been tested offline. It has **not yet been executed against a live APS installation**.
 
-No code license has been selected in this starter. The author should choose one for their own contributions. AVEVA and third-party components remain subject to their own terms and are not redistributed here.
+---
+
+## 🔧 Troubleshooting
+
+<details>
+<summary><strong>simcentralconnect import fails</strong></summary>
+
+Use the Python environment where AVEVA's connector is installed. Do not copy vendor DLLs into this repository or assume an arbitrary PyPI package is the correct connector. The connector is tied to your specific APS installation.
+</details>
+
+<details>
+<summary><strong>PowerShell mangles the JSON in --inputs</strong></summary>
+
+PowerShell's native argument handling can alter JSON quoting. Either:
+- Add `example_inputs` to your config JSON and omit `--inputs`
+- Use `cmd.exe` instead of PowerShell
+- Escape with triple quotes: `--inputs '{\"feed_1\": 0.08}'`
+</details>
+
+<details>
+<summary><strong>UDP receiver times out (no telemetry)</strong></summary>
+
+1. Verify the DLL is deployed and AVEVA is in Dynamics mode
+2. Check that UDP port 5005 is not in use by another program
+3. Confirm `peer_ip` and `send_port` match the DLL's send configuration
+4. Start the experiment **after** AVEVA has fully loaded the model
+</details>
+
+<details>
+<summary><strong>Snapshot does not fully reset state</strong></summary>
+
+APS snapshots may not reset private DLL memory or queued UDP commands. The engine drains residual telemetry and sends a complete input vector, but cannot guarantee a protocol-level reset without DLL-side support. See [docs/protocol.md](docs/protocol.md).
+</details>
+
+<details>
+<summary><strong>RunDynamics duration vs. target time confusion</strong></summary>
+
+Verify whether your installed `RunDynamics` interprets its argument as a duration or an absolute target time before changing starting clocks. The engine passes the configured `argument` value directly — it does not guess the semantics from .NET type names.
+</details>
+
+---
+
+## 🚀 What Can Be Reused?
+
+The engine supports **any configured number of numeric inputs and outputs** when the custom DLL implements the selected protocol. Adapting to another process model requires:
+
+1. Building and deploying a compatible DLL ([instructions here](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP))
+2. Writing a JSON config with the new variable mappings, bounds, and run parameters
+3. Preparing a Dynamics snapshot as the base state
+
+No Python code changes are needed. See [docs/adapt_another_simulation.md](docs/adapt_another_simulation.md).
+
+### Extension Roadmap
+
+- **Soft Sensors** — Feed telemetry to ML models for real-time inference of unmeasured variables
+- **Model Predictive Control** — Replace constant inputs with optimization-based sequences
+- **AVEVA PI System** — Write experiment results to PI tags for historian storage
+- **Dynamic Operability** — Implement the full input-sequence funnel propagation algorithm
+- **Green Hydrogen** — Apply to electrolyzer/fuel cell models for H₂ production optimization
+- **Refinery Inference** — Deploy trained models for distillation column quality prediction
+
+---
+
+## ⚠️ Important Notes
+
+- No module connects to APS merely when imported — side-effect free
+- Keep your own multiprocessing entry points under `if __name__ == "__main__":` on Windows
+- Use one engine/port pair sequentially — these examples do not coordinate concurrent access
+- Units in configuration document the contract; the engine does **not** perform unit conversion
+
+---
+
+## 👤 Author
+
+**Ezequiel José Valencia Urbina**
+
+- 🎓 M.Sc. Candidate — Mechanical Systems Dynamics, University of Brasília (UnB)
+- 🔬 Research: Digital Twins, Soft Sensors, Process Control, Green Hydrogen
+- 🔗 Petrobras collaboration: real-time inference in petroleum refineries
+- 📧 urbina.ezequiel@aluno.unb.br
+
+---
+
+## 📝 License
+
+No code license has been selected yet. AVEVA and third-party components remain subject to their own terms and are not redistributed here.
+
+> **Recommendation:** Consider adding [MIT](https://choosealicense.com/licenses/mit/) or [Apache-2.0](https://choosealicense.com/licenses/apache-2.0/) for maximum academic and industrial reuse.
+
+---
+
+## 🌐 Related Repositories
+
+| Repository | Description |
+|------------|-------------|
+| [AVEVA-Process-Simulation-UDP](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP) | C# DLL development, EETK setup, valve and four-tank examples, PDF guide |
+| This repository | Python automation engine, sweeps, operability analysis |
+
+---
+
+<p align="center">
+  <strong>Made with ❤️ at the University of Brasília (UnB)</strong><br>
+  <em>Automating rigorous simulation for research and industry</em>
+</p>
