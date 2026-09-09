@@ -1,0 +1,68 @@
+{
+  "simulation": "Sim 3",
+  "snapshot": "start dym",
+  "api_timeout_ms": 120000,
+  "udp": {
+    "bind_ip": "127.0.0.1",
+    "peer_ip": "127.0.0.1",
+    "receive_port": 5005,
+    "send_port": 5006,
+    "command_format": "json"
+  },
+  "inputs": {
+    "feed_1": {
+      "key": "q1",
+      "unit": "kg/s",
+      "bounds": [
+        0.05,
+        0.11
+      ],
+      "aps_path": "Srcs1.Q_total_1"
+    },
+    "feed_2": {
+      "key": "q2",
+      "unit": "kg/s",
+      "bounds": [
+        0.05,
+        0.11
+      ],
+      "aps_path": "Srcs1.Q_total_2"
+    }
+  },
+  "outputs": {
+    "level_1": {
+      "key": "h1",
+      "unit": "m",
+      "aps_path": "T1.LHeight"
+    },
+    "level_2": {
+      "key": "h2",
+      "unit": "m",
+      "aps_path": "T2.LHeight"
+    },
+    "level_3": {
+      "key": "h3",
+      "unit": "m",
+      "aps_path": "T3.LHeight"
+    },
+    "level_4": {
+      "key": "h4",
+      "unit": "m",
+      "aps_path": "T4.LHeight"
+    }
+  },
+  "run": {
+    "argument": 20.0,
+    "unit": "s",
+    "expected_final_time": 20.0,
+    "time_tolerance": 0.05,
+    "time_key": "sim_time"
+  },
+  "example_inputs": {
+    "feed_1": 0.08,
+    "feed_2": 0.05
+  },
+  "result_directory": "results",
+  "worker_timeout": 15,
+  "drain_seconds": 0.3
+}

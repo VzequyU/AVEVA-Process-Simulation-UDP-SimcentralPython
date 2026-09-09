@@ -1,0 +1,21 @@
+{
+  "outputs": [
+    "level_1",
+    "level_2"
+  ],
+  "resolution": [
+    3,
+    3
+  ],
+  "dos_bounds": [
+    [
+      0.175,
+      0.185
+    ],
+    [
+      0.175,
+      0.185
+    ]
+  ],
+  "note": "Illustrative level DOS from the supplied script. Replace with actual process requirements."
+}
