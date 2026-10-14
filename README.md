@@ -310,9 +310,11 @@ Ten offline tests use real localhost sockets with mock simulator services (no AP
 | TCP v2 | DLL reload | Reconnection when a snapshot restore drops the connection |
 | TCP v2 | Missing acknowledgement | Run fails and the snapshot is still restored |
 
-> **Status:** both transports are tested offline. The TCP v2 bridge itself was tested in APS (see the
-> DLL repository); the TCP path of this engine has not yet been run end to end against a live APS
-> installation.
+> **Status:** both transports are tested offline. The TCP v2 path was also run end to end in APS
+> with the four-tank model and `config/four_tanks_tcp.json`: one constant-input run with `run.settle`
+> succeeded after 3000 s of simulated time (2000 s plus two 500 s extensions) in 32 s of wall time,
+> with 30 000 accepted-step samples, no sequence gaps, no repeated times, the command acknowledged
+> by the DLL and the snapshot restored afterwards.
 
 ---
 
@@ -391,7 +393,6 @@ No Python code changes are needed.
 - **AVEVA PI System** — Write experiment results to PI tags for historian storage
 - **Dynamic Operability** — Implement the full input-sequence funnel propagation algorithm
 - **Green Hydrogen** — Apply to electrolyzer/fuel cell models for H₂ production optimization
-- **Refinery Inference** — Deploy trained models for distillation column quality prediction
 
 ---
 
@@ -410,7 +411,7 @@ No Python code changes are needed.
 
 - 🎓 M.Sc. Candidate — Mechanical Systems Dynamics, University of Brasília (UnB)
 - 🔬 Research: Digital Twins, Soft Sensors, Process Control, Green Hydrogen
-- 🔗 Petrobras collaboration: real-time inference in petroleum refineries
+- 🔗 Collaboration: [CODES Group](https://fernandolima.faculty.wvu.edu/) of Prof. Fernando V. Lima, West Virginia University
 - 📧 urbina.ezequiel@aluno.unb.br
 
 ---
