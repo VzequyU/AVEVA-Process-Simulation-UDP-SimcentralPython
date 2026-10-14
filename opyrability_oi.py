@@ -1,4 +1,14 @@
-"""Fixed-horizon adapter; does not enumerate a dynamic input-sequence funnel."""
+"""Map the AIS through APS with opyrability (multimodel_rep) and evaluate the OI (OI_eval).
+
+Each grid point is one constant-input run from the base snapshot. With the UDP transport the
+outputs are the values at a fixed horizon, which are steady states only if the horizon is long
+enough; with "transport": "tcp_v2" and run.settle the run is extended until the outputs stop
+changing, which is what the operability index assumes.
+
+Notes on opyrability: multimodel_rep returns a tuple that OI_eval takes whole; OI_eval returns a
+percentage; for long, thin or strongly curved output sets OI_eval becomes slow as the resolution
+grows, so start with a coarse grid. This script does not compute dynamic operability funnels.
+"""
 import argparse
 import inspect
 import json
@@ -24,7 +34,7 @@ def main():
         raise ValueError('This region example requires two distinct configured output names')
     ais = np.array([config['inputs'][k]['bounds'] for k in names], dtype=float)
     dos = np.array(study['dos_bounds'], dtype=float)
-    resolution = study['resolution']
+    resolution = list(study['resolution'])   # opyrability expects a list, not an array
     if len(resolution) != len(names) or any(type(n) is not int or n < 2 for n in resolution):
         raise ValueError('Provide at least two grid points per input')
     if dos.shape != (2, 2) or not np.isfinite(dos).all() or np.any(dos[:, 0] >= dos[:, 1]):
@@ -55,16 +65,18 @@ def main():
         return cache[key].copy()
 
     region = multimodel_rep(model, ais, resolution, **mapping_kwargs)
-    oi_raw = float(OI_eval(region, dos, **oi_kwargs))
+    oi_raw = float(OI_eval(region, dos, **oi_kwargs))   # region: the full multimodel_rep tuple
     if not math.isfinite(oi_raw):
         raise RuntimeError('Non-finite OI')
     result = {'opyrability_version': version, 'study': study, 'configuration': config,
-              'oi_raw': oi_raw, 'oi_scale': 'Verify installed package convention before labeling percent',
-              'scope': 'Constant-input fixed-horizon sampled region; provisional UDP endpoints',
+              'oi_raw': oi_raw, 'oi_scale': 'percent (OI_eval convention)',
+              'scope': ('Constant-input region; steady state verified by run.settle'
+                        if config['run'].get('settle') else
+                        'Constant-input region at a fixed horizon (not verified as steady state)'),
               'evaluations': [{'inputs': list(k), 'outputs': v.tolist()} for k, v in cache.items()]}
     target = Path(config['result_directory']) / 'operability_result.json'
     target.write_text(json.dumps(result, indent=2), encoding='utf-8')
-    print('OI (raw package return):', oi_raw)
+    print(f'OI: {oi_raw:.2f} %')
     print('Saved:', target)
 
 

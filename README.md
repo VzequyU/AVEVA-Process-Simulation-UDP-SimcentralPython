@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/AVEVA-Process%20Simulation-purple?style=for-the-badge&logo=data:image/png;base64," alt="AVEVA"/>
   <img src="https://img.shields.io/badge/Python-3.8+-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/SimCentral-Connect%20API-teal?style=for-the-badge" alt="SimCentral"/>
-  <img src="https://img.shields.io/badge/Protocol-UDP%20Sockets-orange?style=for-the-badge" alt="UDP"/>
+  <img src="https://img.shields.io/badge/Protocol-TCP%20v2%20%7C%20UDP%20v1-orange?style=for-the-badge" alt="TCP v2 and UDP v1"/>
   <img src="https://img.shields.io/badge/Opyrability-OI%20Evaluation-red?style=for-the-badge" alt="Opyrability"/>
 </p>
 
@@ -30,7 +30,10 @@ This repository provides a **reusable Python engine** for running automated expe
 It combines two communication channels:
 
 - **`simcentralconnect`** — the official scripting API that controls the simulation lifecycle (open, stop, snapshot, run dynamics)
-- **Custom EETK DLL over UDP** — real-time bidirectional data exchange with the process model
+- **Custom EETK DLL** — data exchange with the process model, over one of two transports:
+  - **`tcp_v2` (recommended)** — bridge version 2: one sample per *accepted* integration step, commands
+    acknowledged with the simulation time at which they took effect, rejected steps reported (`rewind`)
+  - **`udp` (v1)** — original bridge: one datagram per residual evaluation, no acknowledgement
 
 ```
 ┌────────────────────┐                              ┌────────────────────────┐
@@ -53,7 +56,8 @@ It combines two communication channels:
 
 - ✅ **JSON-configured** — change process, variables, and bounds without editing code
 - ✅ **Snapshot-based reset** — every experiment starts from the exact same initial condition
-- ✅ **Concurrent UDP** — receiver runs in a separate process, never blocks the solver
+- ✅ **Two transports** — TCP bridge v2 (acknowledged commands, accepted-step samples) or UDP v1
+- ✅ **Steady-state runs** — `run.settle` extends a run until every output stops changing (TCP v2)
 - ✅ **Incremental logging** — raw telemetry (JSONL) + structured results (JSON) + sweep CSV
 - ✅ **Grid sweeps** — sequential constant-input experiments over a parameter grid
 - ✅ **Opyrability integration** — fixed-horizon OI evaluation via the `opyrability` package
@@ -92,7 +96,8 @@ The **custom process DLL runs inside APS**. Python does not load the DLL directl
 
 | File | Purpose |
 |------|---------|
-| `aveva_engine.py` | Core engine: configurable connection, snapshot reset, concurrent UDP reception, result logging |
+| `aveva_engine.py` | Core engine: configurable connection, snapshot reset, UDP or TCP v2 data path, steady-state runs, result logging |
+| `bridge_v2.py` | TCP client for the version-2 DLL bridge (from the DLL repository) |
 | `run_experiment.py` | Run a single configured input vector |
 | `test_aveva_engine.py` | Manual integration entry point for checking the connection |
 | `automated_experiments.py` | Sequential constant-input grid experiments |
@@ -100,15 +105,17 @@ The **custom process DLL runs inside APS**. Python does not load the DLL directl
 
 | Configuration | Purpose |
 |---------------|---------|
-| `config/four_tanks.json` | Concrete four-tank connection example |
+| `config/four_tanks.json` | Four-tank example, UDP v1 bridge |
+| `config/four_tanks_tcp.json` | Four-tank example, TCP v2 bridge with steady-state runs |
 | `config/generic_valve.template.json` | Starting template for another process (edit before use) |
 | `config/grid_four_tanks.json` | Nine-trial grid example |
 | `config/operability_four_tanks.json` | Illustrative two-level DOS and resolution |
 
 | Support | Purpose |
 |---------|---------|
-| `tests/test_engine_offline.py` | Offline tests with real UDP sockets and mock APS services |
-| `docs/` | Connection instructions, protocol details, adaptation guide, LaTeX guide |
+| `tests/test_engine_offline.py` | Offline tests, UDP transport (real sockets, mock APS services) |
+| `tests/test_engine_tcp_offline.py` | Offline tests, TCP v2 transport (fake DLL speaking the v2 protocol) |
+| `docs/` | PDF guide: DLL and SimCentral coding |
 
 ---
 
@@ -127,7 +134,7 @@ The **custom process DLL runs inside APS**. Python does not load the DLL directl
 
 ### Step 1 — Prepare the Simulation
 
-Open your process model, deploy its custom DLL, verify variable specifications, and prepare a named snapshot in Dynamics mode. Stop other programs using UDP port 5005.
+Open your process model, deploy its custom DLL, verify variable specifications, and prepare a named snapshot in Dynamics mode. Stop other programs using the bridge ports (TCP 5006 for v2; UDP 5005/5006 for v1).
 
 ### Step 2 — Configure the Model
 
@@ -166,6 +173,22 @@ Edit `config/four_tanks.json` or copy it for your own process:
 }
 ```
 
+For the **TCP v2 bridge**, replace the `udp` block by:
+
+```jsonc
+  "transport": "tcp_v2",
+  "tcp": { "host": "127.0.0.1", "port": 5006, "timeout": 5.0, "apply": "step" },
+  "run": {
+    "argument": 2000, "unit": "s", "expected_final_time": 2000, "time_tolerance": 0.05, "time_key": "t",
+    "settle": { "chunk": 500, "max_time": 20000, "window": 200, "tolerance": 1e-5 }
+  }
+```
+
+`apply: "step"` applies the inputs at the next accepted step boundary (`"now"`: at the next evaluation).
+`settle` is optional: after `argument` seconds the run is extended in `chunk` steps until every output
+changes less than `tolerance` over the last `window` seconds, or `max_time` is reached (then the run
+fails). See `config/four_tanks_tcp.json`.
+
 > **Note:** Logical input `feed_1` maps to DLL wire key `q1`; logical output `level_1` maps to telemetry key `h1`. Changing a JSON key here does **not** create a variable in the DLL — new process variables must be bound and serialized in the C# code.
 
 ### Step 3 — Check One Experiment
@@ -176,6 +199,9 @@ python -u test_aveva_engine.py --config config/four_tanks.json
 
 # Custom input vector
 python -u run_experiment.py --config config/four_tanks.json --inputs '{"feed_1": 0.08, "feed_2": 0.05}'
+
+# TCP v2 bridge, run until steady state
+python -u run_experiment.py --config config/four_tanks_tcp.json
 ```
 
 ---
@@ -220,7 +246,17 @@ The script:
 3. Calls `multimodel_rep` to construct the achievable output set (AOS)
 4. Calls `OI_eval` against the desired output set (DOS) to compute the raw OI
 
-> ⚠️ This is a **constant-input, fixed-horizon map**. A full dynamic operability funnel requires propagation from retained complete states under changing input sequences. See [docs/operability.md](docs/operability.md).
+> ⚠️ The operability index is defined on the **steady-state** map. With the UDP transport each point is
+> the output at a fixed horizon, which is a steady state only if the horizon is long enough; use the
+> TCP v2 transport with `run.settle` so that each point is checked. A dynamic operability funnel
+> (changing input sequences) is not computed by this script.
+
+Practical notes on `opyrability`:
+
+- `resolution` must be a Python list, not a NumPy array;
+- `OI_eval` takes the whole tuple returned by `multimodel_rep` and returns a **percentage**;
+- for long, thin or strongly curved output sets, `OI_eval` slows down quickly as the grid is refined:
+  start with a coarse resolution.
 
 ---
 
@@ -235,17 +271,21 @@ results/
     └── result.json        # Config, inputs, outputs, timing, cleanup status
 ```
 
+With the TCP v2 transport, `telemetry.jsonl` holds one accepted-step sample per line.
+
 **What `success: true` means:**
-- ✅ APS `RunDynamics` returned success
-- ✅ Usable telemetry reached the expected clock within tolerance
-- ✅ Post-run cleanup (stop + snapshot restore) succeeded
 
-**What it does NOT prove:**
-- ❌ Command acknowledgement (DLL has no ACK protocol)
-- ❌ Accepted-step sampling (intermediate solver iterates may be present)
-- ❌ Complete DLL state reset (snapshot may not reset private DLL memory)
+| Check | UDP v1 | TCP v2 |
+|---|---|---|
+| APS `RunDynamics` returned success | ✅ | ✅ |
+| Telemetry reached the expected simulated time | ✅ (absolute clock) | ✅ (time elapsed after the acknowledged command) |
+| Post-run cleanup (stop + snapshot restore) succeeded | ✅ | ✅ |
+| Command acknowledged by the DLL | ❌ | ✅ (`command_applied_verified`) |
+| Only accepted-step samples, no lost samples | ❌ | ✅ (samples invalidated by a rejected step are removed and reported) |
+| Steady state verified | ❌ | ✅ with `run.settle` |
 
-> Verify the DLL's sampling semantics before drawing quantitative reachability conclusions. See [docs/protocol.md](docs/protocol.md).
+> With the UDP v1 bridge, intermediate solver iterates may be present in the telemetry; verify its
+> sampling semantics before drawing quantitative conclusions.
 
 ---
 
@@ -255,18 +295,24 @@ results/
 python -m unittest discover -s tests -v
 ```
 
-Five offline tests pass using real localhost UDP with mock simulator services:
+Ten offline tests use real localhost sockets with mock simulator services (no APS needed):
 
-| Test | Validates |
-|------|-----------|
-| Command mapping | JSON encoding with logical → wire key translation |
-| Bounds rejection | Out-of-range inputs are caught before sending |
-| Scalar commands | Single-input DLL format works correctly |
-| Concurrent UDP | Receiver handles invalid packets alongside valid telemetry |
-| Failure recovery | Snapshot is restored even when `RunDynamics` fails |
-| Endpoint check | Incorrect final telemetry time is detected and rejected |
+| Transport | Test | Validates |
+|---|---|---|
+| UDP | Command mapping and bounds | Logical → wire keys; out-of-range and non-finite inputs rejected |
+| UDP | Scalar commands | Single-input DLL format |
+| UDP | Acquisition and restore | Invalid packets alongside valid telemetry; snapshot restored |
+| UDP | Failure recovery | Snapshot restored when `RunDynamics` fails |
+| UDP | Endpoint check | Wrong final telemetry time rejected |
+| TCP v2 | Acquisition with acknowledgement | Accepted-step samples, ack, endpoint |
+| TCP v2 | Steady state | `run.settle` extends the run until the drift is below tolerance |
+| TCP v2 | Rejected step | Samples invalidated by a `rewind` removed; no false "lost sample" |
+| TCP v2 | DLL reload | Reconnection when a snapshot restore drops the connection |
+| TCP v2 | Missing acknowledgement | Run fails and the snapshot is still restored |
 
-> **Status:** This refactored version has been tested offline. It has **not yet been executed against a live APS installation**.
+> **Status:** both transports are tested offline. The TCP v2 bridge itself was tested in APS (see the
+> DLL repository); the TCP path of this engine has not yet been run end to end against a live APS
+> installation.
 
 ---
 
@@ -299,7 +345,25 @@ PowerShell's native argument handling can alter JSON quoting. Either:
 <details>
 <summary><strong>Snapshot does not fully reset state</strong></summary>
 
-APS snapshots may not reset private DLL memory or queued UDP commands. The engine drains residual telemetry and sends a complete input vector, but cannot guarantee a protocol-level reset without DLL-side support. See [docs/protocol.md](docs/protocol.md).
+APS snapshots may not reset private DLL memory or queued UDP commands. With UDP the engine drains residual telemetry and sends a complete input vector, but cannot guarantee a protocol-level reset. The TCP v2 bridge detects restores (`rewind`) and the engine verifies the acknowledgement of each command.
+</details>
+
+<details>
+<summary><strong>TCP v2: connection lost after the first snapshot restore</strong></summary>
+
+In a freshly opened simulation the first restore can reload the DLL, which closes the TCP connection. The engine connects the bridge **after** the restore and reconnects automatically when the link no longer answers.
+</details>
+
+<details>
+<summary><strong>Steady state computed by APS ignores the DLL inputs</strong></summary>
+
+`SolveSteadyStateDynamics` does not re-evaluate external equations, so the inputs held by the DLL are ignored. Obtain steady states by integration until the outputs settle (`run.settle`).
+</details>
+
+<details>
+<summary><strong>Data lost or RunDynamics returns immediately</strong></summary>
+
+Always use `.Result` on `RunDynamics` (otherwise the call is asynchronous), and call `OpenSimulation(...).Result` in each API session: an open GUI does not count as an open simulation for the API.
 </details>
 
 <details>
@@ -318,7 +382,7 @@ The engine supports **any configured number of numeric inputs and outputs** when
 2. Writing a JSON config with the new variable mappings, bounds, and run parameters
 3. Preparing a Dynamics snapshot as the base state
 
-No Python code changes are needed. See [docs/adapt_another_simulation.md](docs/adapt_another_simulation.md).
+No Python code changes are needed.
 
 ### Extension Roadmap
 
@@ -371,7 +435,7 @@ No code license has been selected yet. AVEVA and third-party components remain s
 
 | Repository | Description |
 |------------|-------------|
-| [AVEVA-Process-Simulation-UDP](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP) | C# DLL development, EETK setup, valve and four-tank examples, PDF guide |
+| [AVEVA-Process-Simulation-UDP](https://github.com/VzequyU/AVEVA-Process-Simulation-UDP) | C# DLL bridges (UDP v1 and TCP v2), EETK setup, installation video, PDF guide |
 | [Opyrability (CODES-group)](https://github.com/CODES-group/opyrability) | Process operability package by Alves et al. — used for OI evaluation in this project |
 | This repository | Python automation engine, sweeps, operability analysis |
 

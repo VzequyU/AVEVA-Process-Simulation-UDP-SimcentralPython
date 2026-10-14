@@ -1,4 +1,4 @@
-"""Configurable APS lifecycle + UDP transport. Importing this module has no side effects."""
+"""Configurable APS lifecycle + UDP (v1) or TCP (v2) transport. Importing has no side effects."""
 import copy
 import json
 import math
@@ -20,7 +20,11 @@ def finite(value):
 
 def validate_config(config):
     c = copy.deepcopy(config)
-    for key in ('simulation', 'snapshot', 'inputs', 'outputs', 'udp', 'run'):
+    c.setdefault('transport', 'udp')
+    if c['transport'] not in ('udp', 'tcp_v2'):
+        raise ValueError('transport must be udp or tcp_v2')
+    for key in ('simulation', 'snapshot', 'inputs', 'outputs', 'run',
+                'udp' if c['transport'] == 'udp' else 'tcp'):
         if not c.get(key):
             raise ValueError(f'Missing configuration: {key}')
     for group in ('inputs', 'outputs'):
@@ -35,16 +39,38 @@ def validate_config(config):
         lo, hi = map(finite, signal['bounds'])
         if lo >= hi:
             raise ValueError(f'Invalid input bounds: {name}')
-    udp = c['udp']
-    for key in ('receive_port', 'send_port'):
-        if not isinstance(udp[key], int) or not 1 <= udp[key] <= 65535:
-            raise ValueError(f'Invalid port: {key}')
-    socket.inet_aton(udp['bind_ip'])
-    socket.inet_aton(udp['peer_ip'])
-    if udp['command_format'] not in ('json', 'scalar'):
-        raise ValueError('command_format must be json or scalar')
-    if udp['command_format'] == 'scalar' and len(c['inputs']) != 1:
-        raise ValueError('Scalar format requires exactly one input')
+    if c['transport'] == 'udp':
+        udp = c['udp']
+        for key in ('receive_port', 'send_port'):
+            if not isinstance(udp[key], int) or not 1 <= udp[key] <= 65535:
+                raise ValueError(f'Invalid port: {key}')
+        socket.inet_aton(udp['bind_ip'])
+        socket.inet_aton(udp['peer_ip'])
+        if udp['command_format'] not in ('json', 'scalar'):
+            raise ValueError('command_format must be json or scalar')
+        if udp['command_format'] == 'scalar' and len(c['inputs']) != 1:
+            raise ValueError('Scalar format requires exactly one input')
+    else:
+        tcp = c['tcp']
+        tcp.setdefault('host', '127.0.0.1')
+        tcp.setdefault('timeout', 5.0)
+        tcp.setdefault('apply', 'step')
+        socket.inet_aton(tcp['host'])
+        if not isinstance(tcp.get('port'), int) or not 1 <= tcp['port'] <= 65535:
+            raise ValueError('Invalid tcp port')
+        if tcp['apply'] not in ('step', 'now'):
+            raise ValueError('tcp apply must be step or now')
+        if finite(tcp['timeout']) <= 0:
+            raise ValueError('Invalid tcp timeout')
+    settle = c['run'].get('settle')
+    if settle is not None:
+        if c['transport'] != 'tcp_v2':
+            raise ValueError('run.settle requires the tcp_v2 transport (one sample per accepted step)')
+        for key in ('chunk', 'max_time', 'window', 'tolerance'):
+            if finite(settle[key]) <= 0:
+                raise ValueError(f'Invalid run.settle {key}')
+        if settle['window'] > settle['chunk'] + c['run']['argument']:
+            raise ValueError('run.settle window must fit inside the simulated time')
     if c['run']['unit'] != 's':
         raise ValueError('This runner requires run argument and telemetry time in seconds')
     for key in ('argument', 'time_tolerance'):
@@ -79,7 +105,7 @@ def encode_inputs(config, inputs):
         if not lo <= value <= hi:
             raise ValueError(f'{name} outside [{lo}, {hi}]')
         values[signal['key']] = value
-    if config['udp']['command_format'] == 'scalar':
+    if config.get('transport', 'udp') == 'udp' and config['udp']['command_format'] == 'scalar':
         return str(next(iter(values.values()))).encode('utf-8')
     return json.dumps(values, allow_nan=False).encode('utf-8')
 
@@ -165,6 +191,7 @@ class AVEVAEngine:
     def __init__(self, config):
         self.config = validate_config(config)
         self.sc = self.sm = self.snap = None
+        self.bridge = None
 
     @staticmethod
     def _check(value, operation):
@@ -193,6 +220,8 @@ class AVEVAEngine:
 
     def run(self, inputs):
         c = self.config
+        if c['transport'] == 'tcp_v2':
+            return self._run_tcp(inputs)
         payload = encode_inputs(c, inputs)
         if self.sm is None:
             raise RuntimeError('Call connect() first')
@@ -260,3 +289,143 @@ class AVEVAEngine:
             if result['cleanup_errors'] and primary_error is None:
                 raise RuntimeError(f'Cleanup failed; inspect {directory / "result.json"}')
         return result
+
+    # ------------------------------------------------------------------ TCP (bridge v2)
+    def _bridge(self):
+        """Connect the v2 bridge, or reconnect it: restoring a snapshot in a freshly opened
+        simulation can reload the DLL and drop the connection."""
+        from bridge_v2 import BridgeError, BridgeV2
+        tcp = self.config['tcp']
+        if self.bridge is not None:
+            try:
+                self.bridge.ping()
+                return self.bridge
+            except (BridgeError, OSError):
+                self.bridge.close()
+        self.bridge = BridgeV2(tcp['host'], tcp['port'], float(tcp['timeout'])).connect()
+        return self.bridge
+
+    def _collect(self, bridge, samples, events):
+        """After RunDynamics: flush the last accepted step and file the messages in order.
+        A rewind (rejected step or snapshot restore) removes the samples it invalidates."""
+        msgs = []
+        bridge.flush(keep=msgs, timeout=float(self.config['tcp']['timeout']))
+        msgs += bridge.drain()
+        for m in msgs:
+            kind = m.get('type')
+            if kind == 'sample':
+                samples.append(m)
+            elif kind == 'rewind':
+                to = finite(m['to'])
+                self._dropped.update(x['seq'] for x in samples if x['t'] > to)
+                samples[:] = [x for x in samples if x['t'] <= to]
+                events.append(m)
+            elif kind not in ('flushed', 'pong'):
+                events.append(m)
+
+    def _settled(self, samples):
+        """True when every output changed less than the tolerance over the last window."""
+        settle = self.config['run']['settle']
+        if not samples:
+            return False
+        t_end = samples[-1]['t']
+        if t_end - samples[0]['t'] < settle['window']:
+            return False
+        tail = [x for x in samples if x['t'] >= t_end - settle['window']]
+        keys = [spec['key'] for spec in self.config['outputs'].values()]
+        drift = max(max(x[k] for x in tail) - min(x[k] for x in tail) for k in keys)
+        return drift < settle['tolerance']
+
+    def _run_tcp(self, inputs):
+        from bridge_v2 import validate
+        c = self.config
+        if self.sm is None:
+            raise RuntimeError('Call connect() first')
+        values = json.loads(encode_inputs(c, inputs))
+        directory = Path(c['result_directory']).resolve() / uuid.uuid4().hex
+        directory.mkdir(parents=True)
+        result = {'inputs': dict(inputs), 'configuration': c, 'success': False,
+                  'validation_scope': 'Accepted-step samples, command acknowledgement and elapsed '
+                                      'simulated time (bridge v2)',
+                  'command_applied_verified': False, 'cleanup_errors': []}
+        primary_error = None
+        samples, events = [], []
+        self._dropped = set()
+        try:
+            self.reset()
+            mode = str(self.sm.GetSimulationMode(c['simulation'], c['api_timeout_ms']).Result)
+            if mode.lower() != 'dynamics':
+                raise RuntimeError(f'Snapshot must restore Dynamics mode; received {mode}')
+            bridge = self._bridge()          # after the restore: it may have reloaded the DLL
+            bridge.drain()
+            cid = bridge.set_values(apply=c['tcp']['apply'], **values)
+            started = time.perf_counter()
+            simulated = float(c['run']['argument'])
+            self._check(self.sm.RunDynamics(c['simulation'], simulated, 's').Result, 'run dynamics')
+            self._collect(bridge, samples, events)
+            settle = c['run'].get('settle')
+            if settle is not None:
+                while not self._settled(samples) and simulated < settle['max_time']:
+                    self._check(self.sm.RunDynamics(c['simulation'], float(settle['chunk']), 's').Result,
+                                'run dynamics (settle)')
+                    simulated += float(settle['chunk'])
+                    self._collect(bridge, samples, events)
+                result['settled'] = self._settled(samples)
+            result['wall_seconds'] = time.perf_counter() - started
+            result['simulated_seconds'] = simulated
+            self._check(self.sm.TriggerStopSolve(c['simulation'], c['api_timeout_ms']).Result, 'stop after run')
+            with open(directory / 'telemetry.jsonl', 'w', encoding='utf-8') as log:
+                for m in samples:
+                    log.write(json.dumps({k: v for k, v in m.items() if k != '_rx'}) + '\n')
+            acks = [m for m in events if m.get('type') == 'ack' and str(m.get('id')) == str(cid)]
+            integrity = validate(samples) if samples else {'ok': False, 'n_samples': 0}
+            if samples:
+                # sequence gaps left by samples that a rewind invalidated are not losses
+                seqs = [x['seq'] for x in samples]
+                lost = [n for a, b in zip(seqs, seqs[1:]) for n in range(a + 1, b) if n not in self._dropped]
+                integrity['samples_removed_by_rewind'] = len(self._dropped)
+                integrity['n_lost'] = len(lost)
+                integrity['ok'] = integrity['n_non_increasing_t'] == 0 and not lost
+            result['telemetry'] = {'samples': len(samples), 'integrity': integrity,
+                                   'events': [{k: v for k, v in m.items() if k != '_rx'} for m in events]}
+            if not samples:
+                raise RuntimeError('No accepted-step samples received')
+            if not acks:
+                raise RuntimeError('The bridge did not acknowledge the input command')
+            result['command_applied_verified'] = True
+            result['ack'] = {k: v for k, v in acks[0].items() if k != '_rx'}
+            if not integrity['ok']:
+                raise RuntimeError(f'Sample integrity check failed: {integrity}')
+            steps = [b['t'] - a['t'] for a, b in zip(samples, samples[1:])] or [0.0]
+            elapsed = samples[-1]['t'] - finite(acks[0]['t'])
+            if abs(elapsed - simulated) > c['run']['time_tolerance'] + max(steps):
+                raise RuntimeError(f'Simulated time after the command ({elapsed:.3f} s) differs '
+                                   f'from the requested {simulated:.3f} s')
+            if settle is not None and not result['settled']:
+                raise RuntimeError(f'Not settled within run.settle.max_time = {settle["max_time"]} s')
+            last = samples[-1]
+            result['outputs'] = {name: finite(last[spec['key']]) for name, spec in c['outputs'].items()}
+            result['endpoint_time'] = last['t']
+            result['success'] = True
+        except BaseException as exc:
+            primary_error = exc
+            result['error'] = repr(exc)
+            raise
+        finally:
+            try:
+                self.reset()
+            except Exception as exc:
+                result['cleanup_errors'].append(repr(exc))
+            if result['cleanup_errors']:
+                result['success'] = False
+            result['result_directory'] = str(directory)
+            (directory / 'result.json').write_text(json.dumps(result, indent=2, allow_nan=False), encoding='utf-8')
+            if result['cleanup_errors'] and primary_error is None:
+                raise RuntimeError(f'Cleanup failed; inspect {directory / "result.json"}')
+        return result
+
+    def close(self):
+        """Close the v2 bridge connection (the APS simulation is left open)."""
+        if self.bridge is not None:
+            self.bridge.close()
+            self.bridge = None
